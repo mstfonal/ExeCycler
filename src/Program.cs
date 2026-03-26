@@ -76,7 +76,7 @@ namespace AutoStart
 
     class CyclerContext : ApplicationContext
     {
-        private const string GITHUB_REPO = "mstfonal/ExeCycler";
+        private const string GITHUB_REPO = "mstfonal/AutoStart";
         private static readonly string CURRENT_VERSION =
             Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "1.0.0";
 
