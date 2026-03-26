@@ -4,6 +4,7 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
 using System.Net.Http;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Threading;
@@ -60,7 +61,6 @@ namespace ExeCycler
         public static extern IntPtr FindWindow(string? lpClassName, string lpWindowName);
 
         public const int SW_MINIMIZE = 6;
-        public const int SW_SHOWMINIMIZED = 2;
     }
 
     class CyclerConfig
@@ -83,7 +83,10 @@ namespace ExeCycler
     class CyclerContext : ApplicationContext
     {
         private const string GITHUB_REPO = "mstfonal/ExeCycler";
-        private const string CURRENT_VERSION = "1.0.0";
+
+        // Version is read from assembly at runtime so it always matches the build
+        private static readonly string CURRENT_VERSION =
+            Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "1.0.0";
 
         private NotifyIcon? _tray;
         private Thread? _workerThread;
@@ -92,7 +95,7 @@ namespace ExeCycler
         private CyclerConfig _config = new CyclerConfig();
         private string _configPath = "";
         private string _logPath = "";
-        private string _status = "Baslatiliyor...";
+        private string _status = "Starting...";
         private int _cycleCount = 0;
         private readonly object _statusLock = new object();
         private readonly object _logLock = new object();
@@ -112,7 +115,6 @@ namespace ExeCycler
 
             InitTray();
             RegisterAutostart();
-
             _config = LoadOrCreateConfig();
 
             _workerThread = new Thread(WorkerLoop) { IsBackground = true, Name = "CyclerWorker" };
@@ -139,19 +141,18 @@ namespace ExeCycler
             using var brush = new SolidBrush(Color.White);
             var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
             g.DrawString("C", font, brush, new RectangleF(0, 0, 32, 32), sf);
-            IntPtr hIcon = bmp.GetHicon();
-            return Icon.FromHandle(hIcon);
+            return Icon.FromHandle(bmp.GetHicon());
         }
 
         private void InitTray()
         {
             var menu = new ContextMenuStrip();
-            menu.Items.Add("Durum", null, OnShowStatus);
-            menu.Items.Add("Ayarlar", null, OnShowSettings);
-            menu.Items.Add("Guncelleme Kontrol Et", null, OnCheckUpdate);
-            menu.Items.Add("Log dosyasini ac", null, OnOpenLog);
+            menu.Items.Add("Status", null, OnShowStatus);
+            menu.Items.Add("Settings", null, OnShowSettings);
+            menu.Items.Add("Check for Updates", null, OnCheckUpdate);
+            menu.Items.Add("Open Log", null, OnOpenLog);
             menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add("Cikis", null, OnExit);
+            menu.Items.Add("Exit", null, OnExit);
 
             _tray = new NotifyIcon
             {
@@ -171,7 +172,7 @@ namespace ExeCycler
             _syncCtx?.Post(_ => { if (_tray != null) _tray.Text = tip; }, null);
         }
 
-        private void ShowTrayNotification(string title, string message, ToolTipIcon icon = ToolTipIcon.Info)
+        private void ShowBalloon(string title, string message, ToolTipIcon icon = ToolTipIcon.Info)
         {
             _syncCtx?.Post(_ => { _tray?.ShowBalloonTip(5000, title, message, icon); }, null);
         }
@@ -181,11 +182,20 @@ namespace ExeCycler
             string s;
             lock (_statusLock) { s = _status; }
             MessageBox.Show(
-                "Versiyon: " + CURRENT_VERSION + "\nDurum: " + s + "\nDongu sayisi: " + _cycleCount +
-                "\n\nEXE: " + (_config?.ExePath ?? "-") +
-                "\nRun: " + _config?.RunSeconds + "s | Off: " + _config?.OffSeconds + "s" +
-                "\nOto-guncelleme: " + (_config?.AutoUpdate == true ? "Acik" : "Kapali") +
-                "\nMinimize hedef: " + (_config?.MinimizeTarget == true ? "Acik" : "Kapali"),
+                "Version: " + CURRENT_VERSION +
+                "
+Status: " + s +
+                "
+Cycles: " + _cycleCount +
+                "
+
+EXE: " + (_config?.ExePath ?? "-") +
+                "
+Run: " + _config?.RunSeconds + "s  |  Off: " + _config?.OffSeconds + "s" +
+                "
+Auto-update: " + (_config?.AutoUpdate == true ? "On" : "Off") +
+                "
+Minimize target: " + (_config?.MinimizeTarget == true ? "On" : "Off"),
                 "EXE Cycler", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
@@ -198,20 +208,21 @@ namespace ExeCycler
         {
             var form = new Form
             {
-                Text = "EXE Cycler - Ayarlar",
-                Width = 480, Height = 320,
+                Text = "EXE Cycler - Settings",
+                Width = 480, Height = 330,
                 FormBorderStyle = FormBorderStyle.FixedDialog,
                 MaximizeBox = false, MinimizeBox = false,
                 StartPosition = FormStartPosition.CenterScreen
             };
 
             int y = 20;
-            var lblExe = new Label { Text = "Secili EXE:", Left = 20, Top = y, Width = 160, AutoSize = false, TextAlign = ContentAlignment.MiddleLeft };
-            string exeShort = string.IsNullOrEmpty(_config.ExePath) ? "(Secilmedi)" : Path.GetFileName(_config.ExePath);
+
+            var lblExe = new Label { Text = "Selected EXE:", Left = 20, Top = y, Width = 160, AutoSize = false, TextAlign = ContentAlignment.MiddleLeft };
+            string exeShort = string.IsNullOrEmpty(_config.ExePath) ? "(None)" : Path.GetFileName(_config.ExePath);
             var lblExePath = new Label { Text = exeShort, Left = 190, Top = y, Width = 260, AutoSize = false, Height = 20, TextAlign = ContentAlignment.MiddleLeft, ForeColor = Color.DarkBlue };
             y += 30;
 
-            var btnReset = new Button { Text = "EXE Sifirla (Yeniden Sec)", Left = 190, Top = y, Width = 260, Height = 30 };
+            var btnReset = new Button { Text = "Reset EXE (Pick New)", Left = 190, Top = y, Width = 260, Height = 28 };
             btnReset.Click += (s, ev) =>
             {
                 string picked = PickExe();
@@ -220,40 +231,41 @@ namespace ExeCycler
                     _config.ExePath = picked;
                     SaveConfig(_config);
                     lblExePath.Text = Path.GetFileName(picked);
-                    Log("EXE degistirildi: " + picked);
-                    MessageBox.Show("EXE degistirildi:\n" + picked + "\n\nDegisiklik bir sonraki dongu basinda gecerli olacak.", "EXE Cycler", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    Log("EXE changed: " + picked);
+                    MessageBox.Show("EXE updated:
+" + picked + "
+
+Takes effect on next cycle.", "EXE Cycler", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
             };
-            y += 40;
+            y += 38;
 
-            var lblRun = new Label { Text = "Run suresi (sn):", Left = 20, Top = y + 3, Width = 160 };
+            var lblRun = new Label { Text = "Run duration (sec):", Left = 20, Top = y + 3, Width = 160 };
             var txtRun = new TextBox { Text = _config.RunSeconds.ToString(), Left = 190, Top = y, Width = 80 };
             y += 35;
 
-            var lblOff = new Label { Text = "Off suresi (sn):", Left = 20, Top = y + 3, Width = 160 };
+            var lblOff = new Label { Text = "Off duration (sec):", Left = 20, Top = y + 3, Width = 160 };
             var txtOff = new TextBox { Text = _config.OffSeconds.ToString(), Left = 190, Top = y, Width = 80 };
             y += 35;
 
-            var chkUpdate = new CheckBox { Text = "Otomatik Guncelleme", Left = 190, Top = y, Width = 260, Checked = _config.AutoUpdate };
-            y += 30;
-
-            var chkMin = new CheckBox { Text = "Hedef EXEyi Minimize Et", Left = 190, Top = y, Width = 260, Checked = _config.MinimizeTarget };
+            var chkUpdate = new CheckBox { Text = "Auto-update", Left = 190, Top = y, Width = 260, Checked = _config.AutoUpdate };
+            y += 28;
+            var chkMin = new CheckBox { Text = "Minimize target window", Left = 190, Top = y, Width = 260, Checked = _config.MinimizeTarget };
             y += 40;
 
-            var btnSave = new Button { Text = "Kaydet", Left = 190, Top = y, Width = 120, Height = 30 };
+            var btnSave = new Button { Text = "Save", Left = 190, Top = y, Width = 110, Height = 28 };
             btnSave.Click += (s, ev) =>
             {
-                if (int.TryParse(txtRun.Text, out int runSec) && runSec > 0) _config.RunSeconds = runSec;
-                if (int.TryParse(txtOff.Text, out int offSec) && offSec >= 0) _config.OffSeconds = offSec;
+                if (int.TryParse(txtRun.Text, out int r) && r > 0) _config.RunSeconds = r;
+                if (int.TryParse(txtOff.Text, out int o) && o >= 0) _config.OffSeconds = o;
                 _config.AutoUpdate = chkUpdate.Checked;
                 _config.MinimizeTarget = chkMin.Checked;
                 SaveConfig(_config);
-                Log("Ayarlar kaydedildi.");
-                MessageBox.Show("Ayarlar kaydedildi.", "EXE Cycler", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                Log("Settings saved.");
+                MessageBox.Show("Settings saved.", "EXE Cycler", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 form.Close();
             };
-
-            var btnCancel = new Button { Text = "Iptal", Left = 320, Top = y, Width = 100, Height = 30 };
+            var btnCancel = new Button { Text = "Cancel", Left = 310, Top = y, Width = 100, Height = 28 };
             btnCancel.Click += (s, ev) => form.Close();
 
             form.Controls.AddRange(new Control[] { lblExe, lblExePath, btnReset, lblRun, txtRun, lblOff, txtOff, chkUpdate, chkMin, btnSave, btnCancel });
@@ -262,23 +274,32 @@ namespace ExeCycler
 
         private void OnCheckUpdate(object? sender, EventArgs e)
         {
-            new Thread(() => { var info = CheckForUpdate(); if (info != null) ApplyUpdate(info); else ShowTrayNotification("EXE Cycler", "Guncelleme yok. Surum: " + CURRENT_VERSION); }) { IsBackground = true }.Start();
+            new Thread(() =>
+            {
+                var info = CheckForUpdate();
+                if (info != null) ApplyUpdate(info);
+                else ShowBalloon("EXE Cycler", "No update available. Version: " + CURRENT_VERSION);
+            })
+            { IsBackground = true }.Start();
         }
 
         private void OnOpenLog(object? sender, EventArgs e)
         {
             if (File.Exists(_logPath)) Process.Start(new ProcessStartInfo(_logPath) { UseShellExecute = true });
-            else MessageBox.Show("Log dosyasi henuz olusturulmadi.", "EXE Cycler");
+            else MessageBox.Show("Log file not created yet.", "EXE Cycler");
         }
 
         private void OnExit(object? sender, EventArgs e)
         {
             _running = false;
             if (_tray != null) _tray.Visible = false;
-            Log("=== Kullanici istegi ile cikiliyor ===");
+            Log("=== Exit requested by user ===");
             Application.Exit();
         }
 
+        // ----------------------------------------------------------------
+        // Auto-update
+        // ----------------------------------------------------------------
         private void UpdateLoop()
         {
             Thread.Sleep(60000);
@@ -289,13 +310,15 @@ namespace ExeCycler
                     var info = CheckForUpdate();
                     if (info != null)
                     {
-                        Log("Guncelleme bulundu: " + info.TagName);
-                        ShowTrayNotification("EXE Cycler - Guncelleme", "Yeni surum: " + info.TagName + " (mevcut: " + CURRENT_VERSION + ")\n60 saniye icerisinde uygulanacak...");
+                        Log("Update found: " + info.TagName);
+                        ShowBalloon("EXE Cycler - Update Available",
+                            "New version: " + info.TagName + " (current: " + CURRENT_VERSION + ")
+Applying in 60 seconds...");
                         for (int i = 0; i < 120 && _running; i++) Thread.Sleep(500);
                         if (_running) ApplyUpdate(info);
                     }
                 }
-                catch (Exception ex) { Log("Guncelleme kontrol hatasi: " + ex.Message); }
+                catch (Exception ex) { Log("Update check error: " + ex.Message); }
                 for (int i = 0; i < 43200 && _running; i++) Thread.Sleep(500);
             }
         }
@@ -307,25 +330,23 @@ namespace ExeCycler
                 using var client = new HttpClient();
                 client.Timeout = TimeSpan.FromSeconds(10);
                 client.DefaultRequestHeaders.Add("User-Agent", "ExeCycler/" + CURRENT_VERSION);
-                string url = "https://api.github.com/repos/" + GITHUB_REPO + "/releases/latest";
-                string json = client.GetStringAsync(url).GetAwaiter().GetResult();
+                string json = client.GetStringAsync("https://api.github.com/repos/" + GITHUB_REPO + "/releases/latest").GetAwaiter().GetResult();
                 using var doc = JsonDocument.Parse(json);
                 var root = doc.RootElement;
                 string tagName = root.GetProperty("tag_name").GetString() ?? "";
-                string releaseVersion = tagName.TrimStart('v');
-                if (!IsNewerVersion(releaseVersion, CURRENT_VERSION)) return null;
-                string downloadUrl = "";
+                if (!IsNewerVersion(tagName.TrimStart('v'), CURRENT_VERSION)) return null;
+                string dlUrl = "";
                 if (root.TryGetProperty("assets", out var assets))
                     foreach (var asset in assets.EnumerateArray())
                     {
                         string name = asset.GetProperty("name").GetString() ?? "";
                         if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
-                        { downloadUrl = asset.GetProperty("browser_download_url").GetString() ?? ""; break; }
+                        { dlUrl = asset.GetProperty("browser_download_url").GetString() ?? ""; break; }
                     }
-                if (string.IsNullOrEmpty(downloadUrl)) return null;
-                return new UpdateInfo { TagName = tagName, DownloadUrl = downloadUrl };
+                if (string.IsNullOrEmpty(dlUrl)) return null;
+                return new UpdateInfo { TagName = tagName, DownloadUrl = dlUrl };
             }
-            catch (Exception ex) { Log("Guncelleme kontrolu basarisiz: " + ex.Message); return null; }
+            catch (Exception ex) { Log("Update check failed: " + ex.Message); return null; }
         }
 
         private void ApplyUpdate(UpdateInfo info)
@@ -334,33 +355,59 @@ namespace ExeCycler
             string exeDir = Path.GetDirectoryName(currentExe) ?? AppDomain.CurrentDomain.BaseDirectory;
             string backupPath = Path.Combine(exeDir, "ExeCycler_backup.exe");
             string tempPath = Path.Combine(exeDir, "ExeCycler_new.exe");
-            Log("Guncelleme basliyor: " + info.TagName);
-            ShowTrayNotification("EXE Cycler", "Guncelleme indiriliyor: " + info.TagName + "...");
+
+            Log("Applying update: " + info.TagName);
+            ShowBalloon("EXE Cycler", "Downloading update " + info.TagName + "...");
+
             try
             {
                 using var client = new HttpClient();
                 client.Timeout = TimeSpan.FromSeconds(120);
                 client.DefaultRequestHeaders.Add("User-Agent", "ExeCycler/" + CURRENT_VERSION);
-                byte[] newExeBytes = client.GetByteArrayAsync(info.DownloadUrl).GetAwaiter().GetResult();
-                if (newExeBytes.Length < 1024) throw new Exception("Indirilen dosya cok kucuk.");
-                File.WriteAllBytes(tempPath, newExeBytes);
-                Log("Yeni EXE indirildi: " + newExeBytes.Length + " bytes");
+                byte[] bytes = client.GetByteArrayAsync(info.DownloadUrl).GetAwaiter().GetResult();
+                if (bytes.Length < 1024) throw new Exception("Downloaded file too small.");
+                File.WriteAllBytes(tempPath, bytes);
+                Log("Downloaded: " + bytes.Length + " bytes");
+
                 if (File.Exists(backupPath)) File.Delete(backupPath);
                 File.Copy(currentExe, backupPath);
-                Log("Yedek olusturuldu: " + backupPath);
-                string batPath = Path.Combine(exeDir, "update_helper.bat");
-                string batContent = "@echo off\r\ntimeout /t 2 /nobreak >nul\r\ncopy /y \"" + tempPath + "\" \"" + currentExe + "\"\r\nif errorlevel 1 goto rollback\r\ndel \"" + tempPath + "\"\r\nstart \"" + currentExe + "\" --updated\r\ndel \"%~f0\"\r\nexit\r\n:rollback\r\ncopy /y \"" + backupPath + "\" \"" + currentExe + "\"\r\nstart \"" + currentExe + "\"\r\ndel \"%~f0\"\r\nexit\r\n";
-                File.WriteAllText(batPath, batContent);
+                Log("Backup created: " + backupPath);
+
+                // Write a tiny helper exe-launcher script using PowerShell hidden, no UAC, no CMD window
+                string ps1Path = Path.Combine(exeDir, "update_helper.ps1");
+                string ps1 =
+                    "Start-Sleep -Seconds 2
+" +
+                    "Copy-Item -Path '" + tempPath.Replace("'", "''") + "' -Destination '" + currentExe.Replace("'", "''") + "' -Force
+" +
+                    "Remove-Item -Path '" + tempPath.Replace("'", "''") + "' -ErrorAction SilentlyContinue
+" +
+                    "Start-Process -FilePath '" + currentExe.Replace("'", "''") + "' -ArgumentList '--updated'
+" +
+                    "Remove-Item -Path $MyInvocation.MyCommand.Path -ErrorAction SilentlyContinue
+";
+                File.WriteAllText(ps1Path, ps1);
+
                 _running = false;
-                Process.Start(new ProcessStartInfo("cmd.exe", "/c \"" + batPath + "\"") { WindowStyle = ProcessWindowStyle.Hidden, UseShellExecute = true });
+
+                // Launch PowerShell hidden — no UAC prompt, no visible window
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "powershell.exe",
+                    Arguments = "-NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "" + ps1Path + """,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    WindowStyle = ProcessWindowStyle.Hidden
+                });
+
                 Thread.Sleep(500);
                 _syncCtx?.Post(_ => { if (_tray != null) _tray.Visible = false; Application.Exit(); }, null);
             }
             catch (Exception ex)
             {
-                Log("GUNCELLEME HATASI: " + ex.Message);
+                Log("UPDATE ERROR: " + ex.Message);
                 try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
-                ShowTrayNotification("EXE Cycler - Guncelleme Hatasi", "Basarisiz: " + ex.Message, ToolTipIcon.Error);
+                ShowBalloon("EXE Cycler - Update Failed", ex.Message, ToolTipIcon.Error);
             }
         }
 
@@ -370,42 +417,39 @@ namespace ExeCycler
             catch { return false; }
         }
 
+        // ----------------------------------------------------------------
+        // Config
+        // ----------------------------------------------------------------
         private CyclerConfig LoadOrCreateConfig()
         {
             if (File.Exists(_configPath))
             {
                 try
                 {
-                    string json = File.ReadAllText(_configPath);
-                    var cfg = JsonSerializer.Deserialize<CyclerConfig>(json);
+                    var cfg = JsonSerializer.Deserialize<CyclerConfig>(File.ReadAllText(_configPath));
                     if (cfg != null)
                     {
-                        Log("Config yuklendi: " + _configPath);
+                        Log("Config loaded: " + _configPath);
                         if (string.IsNullOrEmpty(cfg.ExePath) || !File.Exists(cfg.ExePath))
                         {
-                            Log("Kayitli EXE bulunamadi, yeniden seciliyor: " + cfg.ExePath);
+                            Log("Saved EXE not found, re-picking: " + cfg.ExePath);
                             cfg.ExePath = PickExe();
                             SaveConfig(cfg);
                         }
                         return cfg;
                     }
                 }
-                catch (Exception ex) { Log("Config okuma hatasi: " + ex.Message); }
+                catch (Exception ex) { Log("Config read error: " + ex.Message); }
             }
-            var newCfg = new CyclerConfig();
-            newCfg.ExePath = PickExe();
+            var newCfg = new CyclerConfig { ExePath = PickExe() };
             SaveConfig(newCfg);
             return newCfg;
         }
 
         private void SaveConfig(CyclerConfig cfg)
         {
-            try
-            {
-                var opts = new JsonSerializerOptions { WriteIndented = true };
-                File.WriteAllText(_configPath, JsonSerializer.Serialize(cfg, opts));
-            }
-            catch (Exception ex) { Log("Config kaydetme hatasi: " + ex.Message); }
+            try { File.WriteAllText(_configPath, JsonSerializer.Serialize(cfg, new JsonSerializerOptions { WriteIndented = true })); }
+            catch (Exception ex) { Log("Config save error: " + ex.Message); }
         }
 
         private string PickExe()
@@ -413,17 +457,17 @@ namespace ExeCycler
             string result = "";
             var t = new Thread(() =>
             {
-                using var dlg = new OpenFileDialog { Filter = "Uygulamalar (*.exe)|*.exe", Title = "Dongu EXE secin" };
+                using var dlg = new OpenFileDialog { Filter = "Applications (*.exe)|*.exe", Title = "Select EXE to cycle" };
                 if (dlg.ShowDialog() == DialogResult.OK) result = dlg.FileName;
             });
             t.SetApartmentState(ApartmentState.STA);
             t.Start(); t.Join();
             if (string.IsNullOrEmpty(result))
             {
-                MessageBox.Show("EXE secilmedi. Program kapaniyor.", "EXE Cycler", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show("No EXE selected. Exiting.", "EXE Cycler", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 Application.Exit(); Environment.Exit(0);
             }
-            Log("EXE secildi: " + result);
+            Log("EXE selected: " + result);
             return result;
         }
 
@@ -431,53 +475,58 @@ namespace ExeCycler
         {
             try
             {
-                string exePath = Application.ExecutablePath;
-                using var key = Registry.CurrentUser.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", true);
-                key?.SetValue("ExeCycler", "\"" + exePath + "\"");
-                Log("Autostart kaydedildi.");
+                using var key = Registry.CurrentUser.OpenSubKey(@"SOFTWAREMicrosoftWindowsCurrentVersionRun", true);
+                key?.SetValue("ExeCycler", """ + Application.ExecutablePath + """);
+                Log("Autostart registered.");
             }
-            catch (Exception ex) { Log("Autostart kayit hatasi: " + ex.Message); }
+            catch (Exception ex) { Log("Autostart error: " + ex.Message); }
         }
 
+        // ----------------------------------------------------------------
+        // Worker
+        // ----------------------------------------------------------------
         private void WorkerLoop()
         {
-            Log("=== EXE Cycler v" + CURRENT_VERSION + " baslatildi ===");
+            Log("=== EXE Cycler v" + CURRENT_VERSION + " started ===");
             Log("Config: Run=" + _config.RunSeconds + "s, Off=" + _config.OffSeconds + "s, EXE=" + _config.ExePath);
+
             while (_running)
             {
                 _cycleCount++;
-                Log("=== DONGU " + _cycleCount + " BASLADI ===");
-                SetStatus("Dongu " + _cycleCount + " - EXE baslatiliyor");
+                Log("=== CYCLE " + _cycleCount + " START ===");
+                SetStatus("Cycle " + _cycleCount + " - launching EXE");
+
                 if (GetProcessCount() == 0)
                 {
-                    bool started = StartExe("Dongu baslangici");
-                    if (!started)
+                    if (!StartExe("Cycle start"))
                     {
-                        Log("Baslatma basarisiz. " + _config.OffSeconds + "s bekleniyor.");
-                        SetStatus("Baslatma hatasi - bekleniyor");
+                        Log("Launch failed. Waiting " + _config.OffSeconds + "s.");
+                        SetStatus("Launch failed - waiting");
                         SleepCancellable(_config.OffSeconds * 1000);
                         continue;
                     }
                 }
-                else Log("EXE zaten calisiyor.");
+                else Log("EXE already running.");
 
-                SetStatus("Dongu " + _cycleCount + " - RUN (" + _config.RunSeconds + "s)");
+                SetStatus("Cycle " + _cycleCount + " - running (" + _config.RunSeconds + "s)");
                 var runEnd = DateTime.UtcNow.AddSeconds(_config.RunSeconds);
                 while (DateTime.UtcNow < runEnd && _running)
                 {
                     SleepCancellable(_config.HeartbeatSeconds * 1000);
                     if (!_running) break;
-                    if (GetProcessCount() == 0) { Log("HEARTBEAT: EXE calısmiyor -> yeniden baslatiliyor"); StartExe("RUN fazinda EXE kapandi"); }
+                    if (GetProcessCount() == 0) { Log("Heartbeat: EXE gone, restarting"); StartExe("Heartbeat restart"); }
                 }
                 if (!_running) break;
-                Log("RUN suresi doldu. EXE durduruluyor.");
-                SetStatus("Dongu " + _cycleCount + " - durduruluyor");
+
+                Log("Run time elapsed. Stopping EXE.");
+                SetStatus("Cycle " + _cycleCount + " - stopping");
                 StopExe();
-                Log("OFF fazi: " + _config.OffSeconds + "s bekleniyor");
-                SetStatus("Dongu " + _cycleCount + " - OFF (" + _config.OffSeconds + "s)");
+
+                Log("Off phase: " + _config.OffSeconds + "s");
+                SetStatus("Cycle " + _cycleCount + " - off (" + _config.OffSeconds + "s)");
                 SleepCancellable(_config.OffSeconds * 1000);
             }
-            Log("=== Worker durdu ===");
+            Log("=== Worker stopped ===");
         }
 
         private int GetProcessCount()
@@ -499,51 +548,59 @@ namespace ExeCycler
             Log("START: " + reason);
             try
             {
-                var psi = new ProcessStartInfo { FileName = _config.ExePath, WorkingDirectory = Path.GetDirectoryName(_config.ExePath), WindowStyle = ProcessWindowStyle.Minimized, UseShellExecute = true };
+                var psi = new ProcessStartInfo
+                {
+                    FileName = _config.ExePath,
+                    WorkingDirectory = Path.GetDirectoryName(_config.ExePath),
+                    WindowStyle = ProcessWindowStyle.Minimized,
+                    UseShellExecute = true
+                };
                 var p = Process.Start(psi);
-                Log("START: basarili PID=" + p?.Id);
+                Log("START OK PID=" + p?.Id);
                 if (_config.MinimizeTarget && p != null)
                 {
                     new Thread(() =>
                     {
-                        try { for (int i = 0; i < 20; i++) { Thread.Sleep(250); p.Refresh(); if (p.MainWindowHandle != IntPtr.Zero) { NativeMethods.ShowWindow(p.MainWindowHandle, NativeMethods.SW_MINIMIZE); Log("START: pencere minimize edildi PID=" + p.Id); break; } } }
+                        try
+                        {
+                            for (int i = 0; i < 20; i++)
+                            {
+                                Thread.Sleep(250); p.Refresh();
+                                if (p.MainWindowHandle != IntPtr.Zero)
+                                { NativeMethods.ShowWindow(p.MainWindowHandle, NativeMethods.SW_MINIMIZE); break; }
+                            }
+                        }
                         catch { }
                     }) { IsBackground = true }.Start();
                 }
                 return true;
             }
-            catch (Exception ex) { Log("START HATASI: " + ex.Message); return false; }
+            catch (Exception ex) { Log("START ERROR: " + ex.Message); return false; }
         }
 
         private void StopExe()
         {
             string exeName = Path.GetFileNameWithoutExtension(_config.ExePath);
             string targetLow = _config.ExePath.ToLowerInvariant();
-            var processes = new System.Collections.Generic.List<Process>();
+            var procs = new System.Collections.Generic.List<Process>();
             foreach (var p in Process.GetProcessesByName(exeName))
             {
-                try { if (p.MainModule?.FileName?.ToLowerInvariant() == targetLow) processes.Add(p); else p.Dispose(); }
+                try { if (p.MainModule?.FileName?.ToLowerInvariant() == targetLow) procs.Add(p); else p.Dispose(); }
                 catch { p.Dispose(); }
             }
-            if (processes.Count == 0) { Log("STOP: zaten calısmiyor."); return; }
-            foreach (var p in processes) { try { if (p.MainWindowHandle != IntPtr.Zero) p.CloseMainWindow(); } catch { } }
+            if (procs.Count == 0) { Log("STOP: not running."); return; }
+            foreach (var p in procs) { try { if (p.MainWindowHandle != IntPtr.Zero) p.CloseMainWindow(); } catch { } }
             var deadline = DateTime.UtcNow.AddSeconds(_config.StopWaitSeconds);
-            while (DateTime.UtcNow < deadline)
-            {
-                Thread.Sleep(250);
-                if (GetProcessCount() == 0) { Log("STOP: graceful basarili."); foreach (var p in processes) p.Dispose(); return; }
-            }
-            foreach (var p in processes) { try { p.Kill(); Log("STOP: kill PID=" + p.Id); } catch (Exception ex) { Log("STOP: kill hatasi PID=" + p.Id + " - " + ex.Message); } finally { p.Dispose(); } }
+            while (DateTime.UtcNow < deadline) { Thread.Sleep(250); if (GetProcessCount() == 0) { Log("STOP: graceful OK"); foreach (var p in procs) p.Dispose(); return; } }
+            foreach (var p in procs) { try { p.Kill(); Log("STOP: killed PID=" + p.Id); } catch (Exception ex) { Log("STOP kill error: " + ex.Message); } finally { p.Dispose(); } }
             Thread.Sleep(500);
-            int final = GetProcessCount();
-            Log(final == 0 ? "STOP: force kill basarili." : "STOP: UYARI - " + final + " process hala calisiyor!");
+            Log(GetProcessCount() == 0 ? "STOP: force kill OK." : "STOP: WARNING - process still running!");
         }
 
         private void SleepCancellable(int ms)
         {
-            const int chunk = 500;
             int elapsed = 0;
-            while (elapsed < ms && _running) { Thread.Sleep(Math.Min(chunk, ms - elapsed)); elapsed += chunk; }
+            while (elapsed < ms && _running) { Thread.Sleep(Math.Min(500, ms - elapsed)); elapsed += 500; }
         }
 
         private void Log(string message)
