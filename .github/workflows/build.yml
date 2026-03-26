@@ -28,18 +28,18 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Publish
-        run: dotnet publish src/ExeCycler.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:Version=${{ steps.version.outputs.version }} -p:AssemblyVersion=${{ steps.version.outputs.version }} -p:FileVersion=${{ steps.version.outputs.version }}
+        run: dotnet publish src/AutoStart.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:Version=${{ steps.version.outputs.version }} -p:AssemblyVersion=${{ steps.version.outputs.version }} -p:FileVersion=${{ steps.version.outputs.version }}
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ExeCycler
-          path: src/bin/Release/net8.0-windows/win-x64/publish/ExeCycler.exe
+          name: AutoStart
+          path: src/bin/Release/net8.0-windows/win-x64/publish/AutoStart.exe
 
       - name: Upload to GitHub Release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: src/bin/Release/net8.0-windows/win-x64/publish/ExeCycler.exe
+          files: src/bin/Release/net8.0-windows/win-x64/publish/AutoStart.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
