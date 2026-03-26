@@ -24,15 +24,12 @@ namespace ExeCycler
                 PerformRollback(backupPath);
                 return;
             }
-
             if (args.Length > 0 && args[0] == "--updated")
                 Thread.Sleep(1500);
-
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             Application.Run(new CyclerContext());
         }
-
         private static void PerformRollback(string backupPath)
         {
             try
@@ -53,13 +50,10 @@ namespace ExeCycler
     {
         [DllImport("user32.dll")]
         public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-
         [DllImport("user32.dll")]
         public static extern bool SetForegroundWindow(IntPtr hWnd);
-
         [DllImport("user32.dll")]
         public static extern IntPtr FindWindow(string? lpClassName, string lpWindowName);
-
         public const int SW_MINIMIZE = 6;
     }
 
@@ -83,8 +77,6 @@ namespace ExeCycler
     class CyclerContext : ApplicationContext
     {
         private const string GITHUB_REPO = "mstfonal/ExeCycler";
-
-        // Version is read from assembly at runtime so it always matches the build
         private static readonly string CURRENT_VERSION =
             Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "1.0.0";
 
@@ -104,22 +96,15 @@ namespace ExeCycler
         public CyclerContext()
         {
             _syncCtx = SynchronizationContext.Current;
-
-            string appData = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-                "ExeCycler");
+            string appData = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ExeCycler");
             Directory.CreateDirectory(appData);
-
             _logPath = Path.Combine(appData, "cyclerlog.txt");
             _configPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config.json");
-
             InitTray();
             RegisterAutostart();
             _config = LoadOrCreateConfig();
-
             _workerThread = new Thread(WorkerLoop) { IsBackground = true, Name = "CyclerWorker" };
             _workerThread.Start();
-
             if (_config.AutoUpdate)
             {
                 _updateThread = new Thread(UpdateLoop) { IsBackground = true, Name = "UpdateChecker" };
@@ -153,7 +138,6 @@ namespace ExeCycler
             menu.Items.Add("Open Log", null, OnOpenLog);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Exit", null, OnExit);
-
             _tray = new NotifyIcon
             {
                 Icon = CreateAppIcon(),
@@ -183,19 +167,12 @@ namespace ExeCycler
             lock (_statusLock) { s = _status; }
             MessageBox.Show(
                 "Version: " + CURRENT_VERSION +
-                "
-Status: " + s +
-                "
-Cycles: " + _cycleCount +
-                "
-
-EXE: " + (_config?.ExePath ?? "-") +
-                "
-Run: " + _config?.RunSeconds + "s  |  Off: " + _config?.OffSeconds + "s" +
-                "
-Auto-update: " + (_config?.AutoUpdate == true ? "On" : "Off") +
-                "
-Minimize target: " + (_config?.MinimizeTarget == true ? "On" : "Off"),
+                "\nStatus: " + s +
+                "\nCycles: " + _cycleCount +
+                "\n\nEXE: " + (_config?.ExePath ?? "-") +
+                "\nRun: " + _config?.RunSeconds + "s  |  Off: " + _config?.OffSeconds + "s" +
+                "\nAuto-update: " + (_config?.AutoUpdate == true ? "On" : "Off") +
+                "\nMinimize target: " + (_config?.MinimizeTarget == true ? "On" : "Off"),
                 "EXE Cycler", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
@@ -214,14 +191,11 @@ Minimize target: " + (_config?.MinimizeTarget == true ? "On" : "Off"),
                 MaximizeBox = false, MinimizeBox = false,
                 StartPosition = FormStartPosition.CenterScreen
             };
-
             int y = 20;
-
             var lblExe = new Label { Text = "Selected EXE:", Left = 20, Top = y, Width = 160, AutoSize = false, TextAlign = ContentAlignment.MiddleLeft };
             string exeShort = string.IsNullOrEmpty(_config.ExePath) ? "(None)" : Path.GetFileName(_config.ExePath);
             var lblExePath = new Label { Text = exeShort, Left = 190, Top = y, Width = 260, AutoSize = false, Height = 20, TextAlign = ContentAlignment.MiddleLeft, ForeColor = Color.DarkBlue };
             y += 30;
-
             var btnReset = new Button { Text = "Reset EXE (Pick New)", Left = 190, Top = y, Width = 260, Height = 28 };
             btnReset.Click += (s, ev) =>
             {
@@ -232,27 +206,20 @@ Minimize target: " + (_config?.MinimizeTarget == true ? "On" : "Off"),
                     SaveConfig(_config);
                     lblExePath.Text = Path.GetFileName(picked);
                     Log("EXE changed: " + picked);
-                    MessageBox.Show("EXE updated:
-" + picked + "
-
-Takes effect on next cycle.", "EXE Cycler", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    MessageBox.Show("EXE updated:\n" + picked + "\n\nTakes effect on next cycle.", "EXE Cycler", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
             };
             y += 38;
-
             var lblRun = new Label { Text = "Run duration (sec):", Left = 20, Top = y + 3, Width = 160 };
             var txtRun = new TextBox { Text = _config.RunSeconds.ToString(), Left = 190, Top = y, Width = 80 };
             y += 35;
-
             var lblOff = new Label { Text = "Off duration (sec):", Left = 20, Top = y + 3, Width = 160 };
             var txtOff = new TextBox { Text = _config.OffSeconds.ToString(), Left = 190, Top = y, Width = 80 };
             y += 35;
-
             var chkUpdate = new CheckBox { Text = "Auto-update", Left = 190, Top = y, Width = 260, Checked = _config.AutoUpdate };
             y += 28;
             var chkMin = new CheckBox { Text = "Minimize target window", Left = 190, Top = y, Width = 260, Checked = _config.MinimizeTarget };
             y += 40;
-
             var btnSave = new Button { Text = "Save", Left = 190, Top = y, Width = 110, Height = 28 };
             btnSave.Click += (s, ev) =>
             {
@@ -267,7 +234,6 @@ Takes effect on next cycle.", "EXE Cycler", MessageBoxButtons.OK, MessageBoxIcon
             };
             var btnCancel = new Button { Text = "Cancel", Left = 310, Top = y, Width = 100, Height = 28 };
             btnCancel.Click += (s, ev) => form.Close();
-
             form.Controls.AddRange(new Control[] { lblExe, lblExePath, btnReset, lblRun, txtRun, lblOff, txtOff, chkUpdate, chkMin, btnSave, btnCancel });
             form.ShowDialog();
         }
@@ -279,8 +245,7 @@ Takes effect on next cycle.", "EXE Cycler", MessageBoxButtons.OK, MessageBoxIcon
                 var info = CheckForUpdate();
                 if (info != null) ApplyUpdate(info);
                 else ShowBalloon("EXE Cycler", "No update available. Version: " + CURRENT_VERSION);
-            })
-            { IsBackground = true }.Start();
+            }) { IsBackground = true }.Start();
         }
 
         private void OnOpenLog(object? sender, EventArgs e)
@@ -297,9 +262,6 @@ Takes effect on next cycle.", "EXE Cycler", MessageBoxButtons.OK, MessageBoxIcon
             Application.Exit();
         }
 
-        // ----------------------------------------------------------------
-        // Auto-update
-        // ----------------------------------------------------------------
         private void UpdateLoop()
         {
             Thread.Sleep(60000);
@@ -311,9 +273,7 @@ Takes effect on next cycle.", "EXE Cycler", MessageBoxButtons.OK, MessageBoxIcon
                     if (info != null)
                     {
                         Log("Update found: " + info.TagName);
-                        ShowBalloon("EXE Cycler - Update Available",
-                            "New version: " + info.TagName + " (current: " + CURRENT_VERSION + ")
-Applying in 60 seconds...");
+                        ShowBalloon("EXE Cycler - Update", "New version: " + info.TagName + "  Current: " + CURRENT_VERSION + "  Applying in 60s...");
                         for (int i = 0; i < 120 && _running; i++) Thread.Sleep(500);
                         if (_running) ApplyUpdate(info);
                     }
@@ -355,10 +315,8 @@ Applying in 60 seconds...");
             string exeDir = Path.GetDirectoryName(currentExe) ?? AppDomain.CurrentDomain.BaseDirectory;
             string backupPath = Path.Combine(exeDir, "ExeCycler_backup.exe");
             string tempPath = Path.Combine(exeDir, "ExeCycler_new.exe");
-
             Log("Applying update: " + info.TagName);
             ShowBalloon("EXE Cycler", "Downloading update " + info.TagName + "...");
-
             try
             {
                 using var client = new HttpClient();
@@ -368,38 +326,29 @@ Applying in 60 seconds...");
                 if (bytes.Length < 1024) throw new Exception("Downloaded file too small.");
                 File.WriteAllBytes(tempPath, bytes);
                 Log("Downloaded: " + bytes.Length + " bytes");
-
                 if (File.Exists(backupPath)) File.Delete(backupPath);
                 File.Copy(currentExe, backupPath);
                 Log("Backup created: " + backupPath);
-
-                // Write a tiny helper exe-launcher script using PowerShell hidden, no UAC, no CMD window
+                // PowerShell hidden - no UAC, no CMD window
+                string nl = "\r\n";
+                string safe_temp = tempPath.Replace("'", "''");
+                string safe_cur = currentExe.Replace("'", "''");
                 string ps1Path = Path.Combine(exeDir, "update_helper.ps1");
-                string ps1 =
-                    "Start-Sleep -Seconds 2
-" +
-                    "Copy-Item -Path '" + tempPath.Replace("'", "''") + "' -Destination '" + currentExe.Replace("'", "''") + "' -Force
-" +
-                    "Remove-Item -Path '" + tempPath.Replace("'", "''") + "' -ErrorAction SilentlyContinue
-" +
-                    "Start-Process -FilePath '" + currentExe.Replace("'", "''") + "' -ArgumentList '--updated'
-" +
-                    "Remove-Item -Path $MyInvocation.MyCommand.Path -ErrorAction SilentlyContinue
-";
+                string ps1 = "Start-Sleep -Seconds 2" + nl
+                    + "Copy-Item -Path '" + safe_temp + "' -Destination '" + safe_cur + "' -Force" + nl
+                    + "Remove-Item -Path '" + safe_temp + "' -ErrorAction SilentlyContinue" + nl
+                    + "Start-Process -FilePath '" + safe_cur + "' -ArgumentList '--updated'" + nl
+                    + "Remove-Item -Path $MyInvocation.MyCommand.Path -ErrorAction SilentlyContinue" + nl;
                 File.WriteAllText(ps1Path, ps1);
-
                 _running = false;
-
-                // Launch PowerShell hidden — no UAC prompt, no visible window
                 Process.Start(new ProcessStartInfo
                 {
                     FileName = "powershell.exe",
-                    Arguments = "-NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "" + ps1Path + """,
+                    Arguments = "-NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File \"" + ps1Path + "\"",
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     WindowStyle = ProcessWindowStyle.Hidden
                 });
-
                 Thread.Sleep(500);
                 _syncCtx?.Post(_ => { if (_tray != null) _tray.Visible = false; Application.Exit(); }, null);
             }
@@ -417,9 +366,6 @@ Applying in 60 seconds...");
             catch { return false; }
         }
 
-        // ----------------------------------------------------------------
-        // Config
-        // ----------------------------------------------------------------
         private CyclerConfig LoadOrCreateConfig()
         {
             if (File.Exists(_configPath))
@@ -475,27 +421,22 @@ Applying in 60 seconds...");
         {
             try
             {
-                using var key = Registry.CurrentUser.OpenSubKey(@"SOFTWAREMicrosoftWindowsCurrentVersionRun", true);
-                key?.SetValue("ExeCycler", """ + Application.ExecutablePath + """);
+                using var key = Registry.CurrentUser.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", true);
+                key?.SetValue("ExeCycler", "\"" + Application.ExecutablePath + "\"");
                 Log("Autostart registered.");
             }
             catch (Exception ex) { Log("Autostart error: " + ex.Message); }
         }
 
-        // ----------------------------------------------------------------
-        // Worker
-        // ----------------------------------------------------------------
         private void WorkerLoop()
         {
             Log("=== EXE Cycler v" + CURRENT_VERSION + " started ===");
             Log("Config: Run=" + _config.RunSeconds + "s, Off=" + _config.OffSeconds + "s, EXE=" + _config.ExePath);
-
             while (_running)
             {
                 _cycleCount++;
                 Log("=== CYCLE " + _cycleCount + " START ===");
                 SetStatus("Cycle " + _cycleCount + " - launching EXE");
-
                 if (GetProcessCount() == 0)
                 {
                     if (!StartExe("Cycle start"))
@@ -507,7 +448,6 @@ Applying in 60 seconds...");
                     }
                 }
                 else Log("EXE already running.");
-
                 SetStatus("Cycle " + _cycleCount + " - running (" + _config.RunSeconds + "s)");
                 var runEnd = DateTime.UtcNow.AddSeconds(_config.RunSeconds);
                 while (DateTime.UtcNow < runEnd && _running)
@@ -517,11 +457,9 @@ Applying in 60 seconds...");
                     if (GetProcessCount() == 0) { Log("Heartbeat: EXE gone, restarting"); StartExe("Heartbeat restart"); }
                 }
                 if (!_running) break;
-
                 Log("Run time elapsed. Stopping EXE.");
                 SetStatus("Cycle " + _cycleCount + " - stopping");
                 StopExe();
-
                 Log("Off phase: " + _config.OffSeconds + "s");
                 SetStatus("Cycle " + _cycleCount + " - off (" + _config.OffSeconds + "s)");
                 SleepCancellable(_config.OffSeconds * 1000);
