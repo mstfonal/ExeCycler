@@ -15,21 +15,56 @@ namespace AutoStart
 {
     static class Program
     {
+        private static Mutex? _mutex;
+
         [STAThread]
         static void Main(string[] args)
         {
+            // Global hata yakalama
+            Application.ThreadException += (s, e) => LogUnhandled(e.Exception);
+            AppDomain.CurrentDomain.UnhandledException += (s, e) =>
+            {
+                if (e.ExceptionObject is Exception ex) LogUnhandled(ex);
+            };
+
             if (args.Length > 0 && args[0] == "--rollback")
             {
                 string backupPath = args.Length > 1 ? args[1] : "";
                 PerformRollback(backupPath);
                 return;
             }
+
             if (args.Length > 0 && args[0] == "--updated")
                 Thread.Sleep(1500);
+
+            // Tek instance kontrolü
+            bool createdNew;
+            _mutex = new Mutex(true, "AutoStart_SingleInstance", out createdNew);
+            if (!createdNew)
+            {
+                MessageBox.Show("AutoStart is already running.\nCheck the system tray.", "AutoStart", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             Application.Run(new CyclerContext());
+
+            _mutex.ReleaseMutex();
         }
+
+        private static void LogUnhandled(Exception ex)
+        {
+            try
+            {
+                string appData = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "AutoStart");
+                Directory.CreateDirectory(appData);
+                string path = Path.Combine(appData, "cyclerlog.txt");
+                File.AppendAllText(path, "[" + DateTime.Now + "] UNHANDLED: " + ex + Environment.NewLine);
+            }
+            catch { }
+        }
+
         private static void PerformRollback(string backupPath)
         {
             try
@@ -77,10 +112,11 @@ namespace AutoStart
     class CyclerContext : ApplicationContext
     {
         private const string GITHUB_REPO = "mstfonal/AutoStart";
-        private static readonly string CURRENT_VERSION =
-            Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "1.0.0";
+        private static readonly string CURRENT_VERSION = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "1.0.0";
+        private static readonly long MAX_LOG_BYTES = 1 * 1024 * 1024; // 1MB
 
         private NotifyIcon? _tray;
+        private ToolStripMenuItem? _statusMenuItem;
         private Thread? _workerThread;
         private Thread? _updateThread;
         private volatile bool _running = true;
@@ -96,15 +132,28 @@ namespace AutoStart
         public CyclerContext()
         {
             _syncCtx = SynchronizationContext.Current;
+
             string appData = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "AutoStart");
             Directory.CreateDirectory(appData);
             _logPath = Path.Combine(appData, "cyclerlog.txt");
-            _configPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config.json");
+
+            // Config AppData'da (yazma izni garantili)
+            _configPath = Path.Combine(appData, "config.json");
+
+            // Eski config konumundan taşı
+            string oldConfigPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config.json");
+            if (File.Exists(oldConfigPath) && !File.Exists(_configPath))
+            {
+                try { File.Copy(oldConfigPath, _configPath); File.Delete(oldConfigPath); } catch { }
+            }
+
             InitTray();
             RegisterAutostart();
             _config = LoadOrCreateConfig();
+
             _workerThread = new Thread(WorkerLoop) { IsBackground = true, Name = "CyclerWorker" };
             _workerThread.Start();
+
             if (_config.AutoUpdate)
             {
                 _updateThread = new Thread(UpdateLoop) { IsBackground = true, Name = "UpdateChecker" };
@@ -122,22 +171,28 @@ namespace AutoStart
             g.FillEllipse(bgBrush, 1, 1, 30, 30);
             using var borderPen = new Pen(Color.FromArgb(20, 100, 40), 1.5f);
             g.DrawEllipse(borderPen, 1, 1, 30, 30);
-            using var font = new Font("Arial", 14, FontStyle.Bold, GraphicsUnit.Pixel);
+            // "AS" yazısı
+            using var font = new Font("Arial", 8, FontStyle.Bold, GraphicsUnit.Pixel);
             using var brush = new SolidBrush(Color.White);
             var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
-            g.DrawString("C", font, brush, new RectangleF(0, 0, 32, 32), sf);
+            g.DrawString("AS", font, brush, new RectangleF(0, 0, 32, 32), sf);
             return Icon.FromHandle(bmp.GetHicon());
         }
 
         private void InitTray()
         {
             var menu = new ContextMenuStrip();
-            menu.Items.Add("Status", null, OnShowStatus);
+
+            // Anlık durum direkt menüde
+            _statusMenuItem = new ToolStripMenuItem("Status: Starting...") { Enabled = false };
+            menu.Items.Add(_statusMenuItem);
+            menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Settings", null, OnShowSettings);
             menu.Items.Add("Check for Updates", null, OnCheckUpdate);
             menu.Items.Add("Open Log", null, OnOpenLog);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Exit", null, OnExit);
+
             _tray = new NotifyIcon
             {
                 Icon = CreateAppIcon(),
@@ -145,7 +200,7 @@ namespace AutoStart
                 ContextMenuStrip = menu,
                 Visible = true
             };
-            _tray.DoubleClick += OnShowStatus;
+            _tray.DoubleClick += OnShowSettings;
         }
 
         private void SetStatus(string s)
@@ -153,27 +208,16 @@ namespace AutoStart
             lock (_statusLock) { _status = s; }
             string tip = "AutoStart v" + CURRENT_VERSION + " - " + s;
             if (tip.Length > 63) tip = tip.Substring(0, 63);
-            _syncCtx?.Post(_ => { if (_tray != null) _tray.Text = tip; }, null);
+            _syncCtx?.Post(_ =>
+            {
+                if (_tray != null) _tray.Text = tip;
+                if (_statusMenuItem != null) _statusMenuItem.Text = "▶ " + s;
+            }, null);
         }
 
         private void ShowBalloon(string title, string message, ToolTipIcon icon = ToolTipIcon.Info)
         {
             _syncCtx?.Post(_ => { _tray?.ShowBalloonTip(5000, title, message, icon); }, null);
-        }
-
-        private void OnShowStatus(object? sender, EventArgs e)
-        {
-            string s;
-            lock (_statusLock) { s = _status; }
-            MessageBox.Show(
-                "Version: " + CURRENT_VERSION +
-                "\nStatus: " + s +
-                "\nCycles: " + _cycleCount +
-                "\n\nEXE: " + (_config?.ExePath ?? "-") +
-                "\nRun: " + _config?.RunSeconds + "s  |  Off: " + _config?.OffSeconds + "s" +
-                "\nAuto-update: " + (_config?.AutoUpdate == true ? "On" : "Off") +
-                "\nMinimize target: " + (_config?.MinimizeTarget == true ? "On" : "Off"),
-                "AutoStart", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
         private void OnShowSettings(object? sender, EventArgs e)
@@ -189,20 +233,26 @@ namespace AutoStart
             var form = new Form
             {
                 Text = "AutoStart - Settings",
-                Width = 480, Height = 330,
+                Width = 480,
+                Height = 340,
                 FormBorderStyle = FormBorderStyle.FixedDialog,
-                MaximizeBox = false, MinimizeBox = false,
-                StartPosition = FormStartPosition.CenterScreen
+                MaximizeBox = false,
+                MinimizeBox = false,
+                StartPosition = FormStartPosition.CenterScreen,
+                TopMost = true
             };
+
             int y = 20;
+
             var lblExe = new Label { Text = "Selected EXE:", Left = 20, Top = y, Width = 160, AutoSize = false, TextAlign = ContentAlignment.MiddleLeft };
             string exeShort = string.IsNullOrEmpty(_config.ExePath) ? "(None)" : Path.GetFileName(_config.ExePath);
             var lblExePath = new Label { Text = exeShort, Left = 190, Top = y, Width = 260, AutoSize = false, Height = 20, TextAlign = ContentAlignment.MiddleLeft, ForeColor = Color.DarkBlue };
             y += 30;
+
             var btnReset = new Button { Text = "Reset EXE (Pick New)", Left = 190, Top = y, Width = 260, Height = 28 };
             btnReset.Click += (s, ev) =>
             {
-                string picked = PickExe();
+                string picked = PickExe(required: false);
                 if (!string.IsNullOrEmpty(picked))
                 {
                     _config.ExePath = picked;
@@ -213,16 +263,21 @@ namespace AutoStart
                 }
             };
             y += 38;
+
             var lblRun = new Label { Text = "Run duration (sec):", Left = 20, Top = y + 3, Width = 160 };
             var txtRun = new TextBox { Text = _config.RunSeconds.ToString(), Left = 190, Top = y, Width = 80 };
             y += 35;
+
             var lblOff = new Label { Text = "Off duration (sec):", Left = 20, Top = y + 3, Width = 160 };
             var txtOff = new TextBox { Text = _config.OffSeconds.ToString(), Left = 190, Top = y, Width = 80 };
             y += 35;
+
             var chkUpdate = new CheckBox { Text = "Auto-update", Left = 190, Top = y, Width = 260, Checked = _config.AutoUpdate };
             y += 28;
+
             var chkMin = new CheckBox { Text = "Minimize target window", Left = 190, Top = y, Width = 260, Checked = _config.MinimizeTarget };
             y += 40;
+
             var btnSave = new Button { Text = "Save", Left = 190, Top = y, Width = 110, Height = 28 };
             btnSave.Click += (s, ev) =>
             {
@@ -235,8 +290,10 @@ namespace AutoStart
                 MessageBox.Show("Settings saved.", "AutoStart", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 form.Close();
             };
+
             var btnCancel = new Button { Text = "Cancel", Left = 310, Top = y, Width = 100, Height = 28 };
             btnCancel.Click += (s, ev) => form.Close();
+
             form.Controls.AddRange(new Control[] { lblExe, lblExePath, btnReset, lblRun, txtRun, lblOff, txtOff, chkUpdate, chkMin, btnSave, btnCancel });
             form.ShowDialog();
         }
@@ -248,13 +305,16 @@ namespace AutoStart
                 var info = CheckForUpdate();
                 if (info != null) ApplyUpdate(info);
                 else ShowBalloon("AutoStart", "No update available. Version: " + CURRENT_VERSION);
-            }) { IsBackground = true }.Start();
+            })
+            { IsBackground = true }.Start();
         }
 
         private void OnOpenLog(object? sender, EventArgs e)
         {
-            if (File.Exists(_logPath)) Process.Start(new ProcessStartInfo(_logPath) { UseShellExecute = true });
-            else MessageBox.Show("Log file not created yet.", "AutoStart");
+            if (File.Exists(_logPath))
+                Process.Start(new ProcessStartInfo(_logPath) { UseShellExecute = true });
+            else
+                MessageBox.Show("Log file not created yet.", "AutoStart");
         }
 
         private void OnExit(object? sender, EventArgs e)
@@ -276,7 +336,7 @@ namespace AutoStart
                     if (info != null)
                     {
                         Log("Update found: " + info.TagName);
-                        ShowBalloon("AutoStart - Update", "New version: " + info.TagName + "  Current: " + CURRENT_VERSION + "  Applying in 60s...");
+                        ShowBalloon("AutoStart - Update", "New version: " + info.TagName + " Applying in 60s...");
                         for (int i = 0; i < 120 && _running; i++) Thread.Sleep(500);
                         if (_running) ApplyUpdate(info);
                     }
@@ -292,7 +352,7 @@ namespace AutoStart
             {
                 using var client = new HttpClient();
                 client.Timeout = TimeSpan.FromSeconds(10);
-                client.DefaultRequestHeaders.Add("User-Agent", "ExeCycler/" + CURRENT_VERSION);
+                client.DefaultRequestHeaders.Add("User-Agent", "AutoStart/" + CURRENT_VERSION);
                 string json = client.GetStringAsync("https://api.github.com/repos/" + GITHUB_REPO + "/releases/latest").GetAwaiter().GetResult();
                 using var doc = JsonDocument.Parse(json);
                 var root = doc.RootElement;
@@ -304,7 +364,10 @@ namespace AutoStart
                     {
                         string name = asset.GetProperty("name").GetString() ?? "";
                         if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
-                        { dlUrl = asset.GetProperty("browser_download_url").GetString() ?? ""; break; }
+                        {
+                            dlUrl = asset.GetProperty("browser_download_url").GetString() ?? "";
+                            break;
+                        }
                     }
                 if (string.IsNullOrEmpty(dlUrl)) return null;
                 return new UpdateInfo { TagName = tagName, DownloadUrl = dlUrl };
@@ -324,7 +387,7 @@ namespace AutoStart
             {
                 using var client = new HttpClient();
                 client.Timeout = TimeSpan.FromSeconds(120);
-                client.DefaultRequestHeaders.Add("User-Agent", "ExeCycler/" + CURRENT_VERSION);
+                client.DefaultRequestHeaders.Add("User-Agent", "AutoStart/" + CURRENT_VERSION);
                 byte[] bytes = client.GetByteArrayAsync(info.DownloadUrl).GetAwaiter().GetResult();
                 if (bytes.Length < 1024) throw new Exception("Downloaded file too small.");
                 File.WriteAllBytes(tempPath, bytes);
@@ -332,7 +395,6 @@ namespace AutoStart
                 if (File.Exists(backupPath)) File.Delete(backupPath);
                 File.Copy(currentExe, backupPath);
                 Log("Backup created: " + backupPath);
-                // PowerShell hidden - no UAC, no CMD window
                 string nl = "\r\n";
                 string safe_temp = tempPath.Replace("'", "''");
                 string safe_cur = currentExe.Replace("'", "''");
@@ -382,7 +444,7 @@ namespace AutoStart
                         if (string.IsNullOrEmpty(cfg.ExePath) || !File.Exists(cfg.ExePath))
                         {
                             Log("Saved EXE not found, re-picking: " + cfg.ExePath);
-                            cfg.ExePath = PickExe();
+                            cfg.ExePath = PickExe(required: true);
                             SaveConfig(cfg);
                         }
                         return cfg;
@@ -390,31 +452,45 @@ namespace AutoStart
                 }
                 catch (Exception ex) { Log("Config read error: " + ex.Message); }
             }
-            var newCfg = new CyclerConfig { ExePath = PickExe() };
+            var newCfg = new CyclerConfig { ExePath = PickExe(required: true) };
             SaveConfig(newCfg);
             return newCfg;
         }
 
         private void SaveConfig(CyclerConfig cfg)
         {
-            try { File.WriteAllText(_configPath, JsonSerializer.Serialize(cfg, new JsonSerializerOptions { WriteIndented = true })); }
+            try
+            {
+                File.WriteAllText(_configPath, JsonSerializer.Serialize(cfg, new JsonSerializerOptions { WriteIndented = true }));
+            }
             catch (Exception ex) { Log("Config save error: " + ex.Message); }
         }
 
-        private string PickExe()
+        private string PickExe(bool required = true)
         {
             string result = "";
             var t = new Thread(() =>
             {
-                using var dlg = new OpenFileDialog { Filter = "Applications (*.exe)|*.exe", Title = "Select EXE to cycle" };
+                using var dlg = new OpenFileDialog
+                {
+                    Filter = "Applications (*.exe)|*.exe",
+                    Title = "Select EXE to cycle"
+                };
                 if (dlg.ShowDialog() == DialogResult.OK) result = dlg.FileName;
             });
             t.SetApartmentState(ApartmentState.STA);
-            t.Start(); t.Join();
+            t.Start();
+            t.Join();
+
             if (string.IsNullOrEmpty(result))
             {
-                MessageBox.Show("No EXE selected. Exiting.", "AutoStart", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                Application.Exit(); Environment.Exit(0);
+                if (required)
+                {
+                    // Tray'de bekle, uygulamayı kapatma
+                    ShowBalloon("AutoStart", "No EXE selected. Right-click tray icon > Settings to pick one.", ToolTipIcon.Warning);
+                    Log("No EXE selected by user.");
+                }
+                return "";
             }
             Log("EXE selected: " + result);
             return result;
@@ -435,11 +511,21 @@ namespace AutoStart
         {
             Log("=== AutoStart v" + CURRENT_VERSION + " started ===");
             Log("Config: Run=" + _config.RunSeconds + "s, Off=" + _config.OffSeconds + "s, EXE=" + _config.ExePath);
+
             while (_running)
             {
+                // EXE seçilmemişse bekle
+                if (string.IsNullOrEmpty(_config.ExePath) || !File.Exists(_config.ExePath))
+                {
+                    SetStatus("No EXE selected - open Settings");
+                    SleepCancellable(5000);
+                    continue;
+                }
+
                 _cycleCount++;
                 Log("=== CYCLE " + _cycleCount + " START ===");
                 SetStatus("Cycle " + _cycleCount + " - launching EXE");
+
                 if (GetProcessCount() == 0)
                 {
                     if (!StartExe("Cycle start"))
@@ -451,18 +537,26 @@ namespace AutoStart
                     }
                 }
                 else Log("EXE already running.");
+
                 SetStatus("Cycle " + _cycleCount + " - running (" + _config.RunSeconds + "s)");
                 var runEnd = DateTime.UtcNow.AddSeconds(_config.RunSeconds);
                 while (DateTime.UtcNow < runEnd && _running)
                 {
                     SleepCancellable(_config.HeartbeatSeconds * 1000);
                     if (!_running) break;
-                    if (GetProcessCount() == 0) { Log("Heartbeat: EXE gone, restarting"); StartExe("Heartbeat restart"); }
+                    if (GetProcessCount() == 0)
+                    {
+                        Log("Heartbeat: EXE gone, restarting");
+                        StartExe("Heartbeat restart");
+                    }
                 }
+
                 if (!_running) break;
+
                 Log("Run time elapsed. Stopping EXE.");
                 SetStatus("Cycle " + _cycleCount + " - stopping");
                 StopExe();
+
                 Log("Off phase: " + _config.OffSeconds + "s");
                 SetStatus("Cycle " + _cycleCount + " - off (" + _config.OffSeconds + "s)");
                 SleepCancellable(_config.OffSeconds * 1000);
@@ -472,12 +566,19 @@ namespace AutoStart
 
         private int GetProcessCount()
         {
+            if (string.IsNullOrEmpty(_config.ExePath)) return 0;
             string exeName = Path.GetFileNameWithoutExtension(_config.ExePath);
             string targetLow = _config.ExePath.ToLowerInvariant();
             int count = 0;
             foreach (var p in Process.GetProcessesByName(exeName))
             {
-                try { if (p.MainModule?.FileName?.ToLowerInvariant() == targetLow) count++; }
+                try
+                {
+                    string? fileName = null;
+                    try { fileName = p.MainModule?.FileName?.ToLowerInvariant(); } catch { }
+                    // MainModule erişimi başarısız olsa bile process adı eşleşiyorsa say
+                    if (fileName == null || fileName == targetLow) count++;
+                }
                 catch { }
                 finally { p.Dispose(); }
             }
@@ -506,13 +607,18 @@ namespace AutoStart
                         {
                             for (int i = 0; i < 20; i++)
                             {
-                                Thread.Sleep(250); p.Refresh();
+                                Thread.Sleep(250);
+                                p.Refresh();
                                 if (p.MainWindowHandle != IntPtr.Zero)
-                                { NativeMethods.ShowWindow(p.MainWindowHandle, NativeMethods.SW_MINIMIZE); break; }
+                                {
+                                    NativeMethods.ShowWindow(p.MainWindowHandle, NativeMethods.SW_MINIMIZE);
+                                    break;
+                                }
                             }
                         }
                         catch { }
-                    }) { IsBackground = true }.Start();
+                    })
+                    { IsBackground = true }.Start();
                 }
                 return true;
             }
@@ -521,19 +627,41 @@ namespace AutoStart
 
         private void StopExe()
         {
+            if (string.IsNullOrEmpty(_config.ExePath)) return;
             string exeName = Path.GetFileNameWithoutExtension(_config.ExePath);
             string targetLow = _config.ExePath.ToLowerInvariant();
             var procs = new System.Collections.Generic.List<Process>();
             foreach (var p in Process.GetProcessesByName(exeName))
             {
-                try { if (p.MainModule?.FileName?.ToLowerInvariant() == targetLow) procs.Add(p); else p.Dispose(); }
+                try
+                {
+                    string? fileName = null;
+                    try { fileName = p.MainModule?.FileName?.ToLowerInvariant(); } catch { }
+                    if (fileName == null || fileName == targetLow) procs.Add(p);
+                    else p.Dispose();
+                }
                 catch { p.Dispose(); }
             }
             if (procs.Count == 0) { Log("STOP: not running."); return; }
-            foreach (var p in procs) { try { if (p.MainWindowHandle != IntPtr.Zero) p.CloseMainWindow(); } catch { } }
+            foreach (var p in procs)
+                try { if (p.MainWindowHandle != IntPtr.Zero) p.CloseMainWindow(); } catch { }
             var deadline = DateTime.UtcNow.AddSeconds(_config.StopWaitSeconds);
-            while (DateTime.UtcNow < deadline) { Thread.Sleep(250); if (GetProcessCount() == 0) { Log("STOP: graceful OK"); foreach (var p in procs) p.Dispose(); return; } }
-            foreach (var p in procs) { try { p.Kill(); Log("STOP: killed PID=" + p.Id); } catch (Exception ex) { Log("STOP kill error: " + ex.Message); } finally { p.Dispose(); } }
+            while (DateTime.UtcNow < deadline)
+            {
+                Thread.Sleep(250);
+                if (GetProcessCount() == 0)
+                {
+                    Log("STOP: graceful OK");
+                    foreach (var p in procs) p.Dispose();
+                    return;
+                }
+            }
+            foreach (var p in procs)
+            {
+                try { p.Kill(); Log("STOP: killed PID=" + p.Id); }
+                catch (Exception ex) { Log("STOP kill error: " + ex.Message); }
+                finally { p.Dispose(); }
+            }
             Thread.Sleep(500);
             Log(GetProcessCount() == 0 ? "STOP: force kill OK." : "STOP: WARNING - process still running!");
         }
@@ -541,13 +669,32 @@ namespace AutoStart
         private void SleepCancellable(int ms)
         {
             int elapsed = 0;
-            while (elapsed < ms && _running) { Thread.Sleep(Math.Min(500, ms - elapsed)); elapsed += 500; }
+            while (elapsed < ms && _running)
+            {
+                Thread.Sleep(Math.Min(500, ms - elapsed));
+                elapsed += 500;
+            }
         }
 
         private void Log(string message)
         {
             string line = "[" + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "] " + message;
-            try { lock (_logLock) File.AppendAllText(_logPath, line + Environment.NewLine, System.Text.Encoding.UTF8); }
+            try
+            {
+                lock (_logLock)
+                {
+                    // Log boyut limiti: 1MB
+                    if (File.Exists(_logPath) && new FileInfo(_logPath).Length > MAX_LOG_BYTES)
+                    {
+                        // Son 200 satırı tut
+                        var lines = File.ReadAllLines(_logPath);
+                        int keep = Math.Min(200, lines.Length);
+                        File.WriteAllLines(_logPath, lines[^keep..], System.Text.Encoding.UTF8);
+                        File.AppendAllText(_logPath, "[" + DateTime.Now + "] Log trimmed to last " + keep + " lines." + Environment.NewLine, System.Text.Encoding.UTF8);
+                    }
+                    File.AppendAllText(_logPath, line + Environment.NewLine, System.Text.Encoding.UTF8);
+                }
+            }
             catch { }
         }
     }
