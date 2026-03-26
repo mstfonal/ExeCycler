@@ -559,7 +559,7 @@ namespace AutoStart
 
                 Log("Off phase: " + _config.OffMinutes + " min");
                 SetStatus("Cycle " + _cycleCount + " - off (" + _config.OffMinutes + " min)");
-                SleepCancellable(_config.OffSeconds * 1000);
+                SleepCancellable(_config.OffMinutes * 60 * 1000);
             }
             Log("=== Worker stopped ===");
         }
