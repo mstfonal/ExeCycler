@@ -486,7 +486,7 @@ namespace AutoStart
                 // cmd.exe ile guncelleme - PS1 ExecutionPolicy sorununu bypass eder
                 string batPath = Path.Combine(exeDir, "update_helper.bat");
                 string bat = "@echo off\r\n"
-                    + "ping 127.0.0.1 -n 4 > nul\r\n"
+                    + "ping 127.0.0.1 -n 9 > nul\r\n"
                     + "copy /Y \"" + tempPath + "\" \"" + currentExe + "\"\r\n"
                     + "del \"" + tempPath + "\"\r\n"
                     + "start \"\" \"" + currentExe + "\" --updated\r\n"
