@@ -99,6 +99,7 @@ namespace AutoStart
         [DllImport("user32.dll")]
         public static extern IntPtr FindWindow(string? lpClassName, string lpWindowName);
         public const int SW_MINIMIZE = 6;
+        public const int SW_SHOWMINNOACTIVE = 7;
     }
 
     class CyclerConfig
@@ -635,8 +636,10 @@ namespace AutoStart
                                 IntPtr hwnd = p.MainWindowHandle;
                                 if (hwnd != IntPtr.Zero)
                                 {
-                                    // SW_SHOWMINNOACTIVE: minimize et, focus verme, ekran ortasina getirme
+                                    // PS1 script ile ayni: once SHOWMINNOACTIVE(7), sonra MINIMIZE(6)
                                     NativeMethods.ShowWindow(hwnd, NativeMethods.SW_SHOWMINNOACTIVE);
+                                    Thread.Sleep(80);
+                                    NativeMethods.ShowWindow(hwnd, NativeMethods.SW_MINIMIZE);
                                     Thread.Sleep(150);
                                     // Tekrar dene - bazi uygulamalar restore eder
                                     NativeMethods.ShowWindow(hwnd, NativeMethods.SW_SHOWMINNOACTIVE);
