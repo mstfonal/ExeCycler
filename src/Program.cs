@@ -21,7 +21,6 @@ namespace AutoStart
         [STAThread]
         static void Main(string[] args)
         {
-            // Global hata yakalama
             Application.ThreadException += (s, e) => LogUnhandled(e.Exception);
             AppDomain.CurrentDomain.UnhandledException += (s, e) =>
             {
@@ -35,8 +34,6 @@ namespace AutoStart
                 return;
             }
 
-            // Tek instance kontrolü
-            // --updated ise eski process kapanana kadar bekle (max 10 deneme)
             bool isUpdate = args.Length > 0 && args[0] == "--updated";
             bool createdNew = false;
             int mutexRetries = isUpdate ? 10 : 1;
@@ -46,7 +43,7 @@ namespace AutoStart
                 if (createdNew) break;
                 _mutex.Dispose();
                 _mutex = null;
-                Thread.Sleep(1000); // eski process kapansın diye bekle
+                Thread.Sleep(1000);
             }
             if (!createdNew)
             {
@@ -98,8 +95,11 @@ namespace AutoStart
         public static extern bool SetForegroundWindow(IntPtr hWnd);
         [DllImport("user32.dll")]
         public static extern IntPtr FindWindow(string? lpClassName, string lpWindowName);
+        [DllImport("user32.dll")]
+        public static extern bool IsWindowVisible(IntPtr hWnd);
         public const int SW_MINIMIZE = 6;
         public const int SW_SHOWMINNOACTIVE = 7;
+        public const int SW_HIDE = 0;
     }
 
     class CyclerConfig
@@ -123,7 +123,7 @@ namespace AutoStart
     {
         private const string GITHUB_REPO = "mstfonal/AutoStart";
         private static readonly string CURRENT_VERSION = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "1.0.0";
-        private static readonly long MAX_LOG_BYTES = 1 * 1024 * 1024; // 1MB
+        private static readonly long MAX_LOG_BYTES = 1 * 1024 * 1024;
 
         private NotifyIcon? _tray;
         private ToolStripMenuItem? _statusMenuItem;
@@ -146,11 +146,8 @@ namespace AutoStart
             string appData = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "AutoStart");
             Directory.CreateDirectory(appData);
             _logPath = Path.Combine(appData, "cyclerlog.txt");
-
-            // Config AppData'da (yazma izni garantili)
             _configPath = Path.Combine(appData, "config.json");
 
-            // Eski config konumundan taşı
             string oldConfigPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config.json");
             if (File.Exists(oldConfigPath) && !File.Exists(_configPath))
             {
@@ -181,7 +178,6 @@ namespace AutoStart
             g.FillEllipse(bgBrush, 1, 1, 30, 30);
             using var borderPen = new Pen(Color.FromArgb(20, 100, 40), 1.5f);
             g.DrawEllipse(borderPen, 1, 1, 30, 30);
-            // "AS" yazısı
             using var font = new Font("Arial", 8, FontStyle.Bold, GraphicsUnit.Pixel);
             using var brush = new SolidBrush(Color.White);
             var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
@@ -193,7 +189,6 @@ namespace AutoStart
         {
             var menu = new ContextMenuStrip();
 
-            // Anlık durum direkt menüde
             _statusMenuItem = new ToolStripMenuItem("Status: Starting...") { Enabled = false };
             menu.Items.Add(_statusMenuItem);
             menu.Items.Add(new ToolStripSeparator());
@@ -350,8 +345,13 @@ namespace AutoStart
                         for (int i = 0; i < 120 && _running; i++) Thread.Sleep(500);
                         if (_running) ApplyUpdate(info);
                     }
+                    else
+                    {
+                        Log("Update check: already on latest (" + CURRENT_VERSION + ")");
+                    }
                 }
                 catch (Exception ex) { Log("Update check error: " + ex.Message); }
+                // 6 saatte bir kontrol
                 for (int i = 0; i < 43200 && _running; i++) Thread.Sleep(500);
             }
         }
@@ -361,28 +361,65 @@ namespace AutoStart
             try
             {
                 using var client = new HttpClient();
-                client.Timeout = TimeSpan.FromSeconds(10);
+                client.Timeout = TimeSpan.FromSeconds(15);
                 client.DefaultRequestHeaders.Add("User-Agent", "AutoStart/" + CURRENT_VERSION);
-                string json = client.GetStringAsync("https://api.github.com/repos/" + GITHUB_REPO + "/releases/latest").GetAwaiter().GetResult();
+                client.DefaultRequestHeaders.Add("Accept", "application/vnd.github+json");
+
+                string url = "https://api.github.com/repos/" + GITHUB_REPO + "/releases/latest";
+                Log("Checking update: " + url);
+
+                string json = client.GetStringAsync(url).GetAwaiter().GetResult();
                 using var doc = JsonDocument.Parse(json);
                 var root = doc.RootElement;
+
                 string tagName = root.GetProperty("tag_name").GetString() ?? "";
-                if (!IsNewerVersion(tagName.TrimStart('v'), CURRENT_VERSION)) return null;
+                Log("Latest release tag: " + tagName + " | Current: " + CURRENT_VERSION);
+
+                if (!IsNewerVersion(tagName.TrimStart('v'), CURRENT_VERSION))
+                {
+                    Log("No update needed.");
+                    return null;
+                }
+
+                // Asset'lerde once ZIP ara, yoksa direkt EXE al
                 string dlUrl = "";
+                string assetName = "";
                 if (root.TryGetProperty("assets", out var assets))
+                {
                     foreach (var asset in assets.EnumerateArray())
                     {
                         string name = asset.GetProperty("name").GetString() ?? "";
+                        string browserUrl = asset.GetProperty("browser_download_url").GetString() ?? "";
+                        Log("Asset found: " + name);
                         if (name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
                         {
-                            dlUrl = asset.GetProperty("browser_download_url").GetString() ?? "";
+                            dlUrl = browserUrl;
+                            assetName = name;
                             break;
                         }
+                        // ZIP yoksa EXE al
+                        if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && string.IsNullOrEmpty(dlUrl))
+                        {
+                            dlUrl = browserUrl;
+                            assetName = name;
+                        }
                     }
-                if (string.IsNullOrEmpty(dlUrl)) return null;
+                }
+
+                if (string.IsNullOrEmpty(dlUrl))
+                {
+                    Log("Update: no downloadable asset found in release.");
+                    return null;
+                }
+
+                Log("Update asset: " + assetName + " -> " + dlUrl);
                 return new UpdateInfo { TagName = tagName, DownloadUrl = dlUrl };
             }
-            catch (Exception ex) { Log("Update check failed: " + ex.Message); return null; }
+            catch (Exception ex)
+            {
+                Log("Update check failed: " + ex.Message);
+                return null;
+            }
         }
 
         private void ApplyUpdate(UpdateInfo info)
@@ -400,23 +437,44 @@ namespace AutoStart
                 client.Timeout = TimeSpan.FromSeconds(120);
                 client.DefaultRequestHeaders.Add("User-Agent", "AutoStart/" + CURRENT_VERSION);
                 byte[] bytes = client.GetByteArrayAsync(info.DownloadUrl).GetAwaiter().GetResult();
-                if (bytes.Length < 1024) throw new Exception("Downloaded file too small.");
-                // ZIP olarak kaydet - SmartScreen MOTW bypass
-                File.WriteAllBytes(tempZip, bytes);
-                Log("Downloaded ZIP: " + bytes.Length + " bytes");
-                // ZIP'ten exe'yi cikart
-                if (File.Exists(tempPath)) File.Delete(tempPath);
-                string tmpDir = Path.Combine(exeDir, "__as_tmp__");
-                if (Directory.Exists(tmpDir)) Directory.Delete(tmpDir, true);
-                System.IO.Compression.ZipFile.ExtractToDirectory(tempZip, tmpDir);
-                string extractedExe = Path.Combine(tmpDir, "AutoStart.exe");
-                File.Move(extractedExe, tempPath);
-                try { Directory.Delete(tmpDir, true); } catch { }
-                try { File.Delete(tempZip); } catch { }
-                Log("Extracted EXE: " + new FileInfo(tempPath).Length + " bytes");
+                if (bytes.Length < 1024) throw new Exception("Downloaded file too small: " + bytes.Length + " bytes");
+                Log("Downloaded: " + bytes.Length + " bytes");
+
+                bool isZip = info.DownloadUrl.EndsWith(".zip", StringComparison.OrdinalIgnoreCase);
+
+                if (isZip)
+                {
+                    File.WriteAllBytes(tempZip, bytes);
+                    if (File.Exists(tempPath)) File.Delete(tempPath);
+                    string tmpDir = Path.Combine(exeDir, "__as_tmp__");
+                    if (Directory.Exists(tmpDir)) Directory.Delete(tmpDir, true);
+                    ZipFile.ExtractToDirectory(tempZip, tmpDir);
+
+                    // ZIP icindeki ilk EXE'yi bul (isim ne olursa olsun)
+                    string? extractedExe = null;
+                    foreach (var f in Directory.GetFiles(tmpDir, "*.exe", SearchOption.AllDirectories))
+                    {
+                        extractedExe = f;
+                        Log("Found EXE in ZIP: " + Path.GetFileName(f));
+                        break;
+                    }
+                    if (extractedExe == null) throw new Exception("No EXE found inside ZIP.");
+                    File.Move(extractedExe, tempPath);
+                    try { Directory.Delete(tmpDir, true); } catch { }
+                    try { File.Delete(tempZip); } catch { }
+                }
+                else
+                {
+                    // Direkt EXE indirildi
+                    File.WriteAllBytes(tempPath, bytes);
+                }
+
+                Log("New EXE ready: " + new FileInfo(tempPath).Length + " bytes");
+
                 if (File.Exists(backupPath)) File.Delete(backupPath);
                 File.Copy(currentExe, backupPath);
                 Log("Backup created: " + backupPath);
+
                 string nl = "\r\n";
                 string safe_temp = tempPath.Replace("'", "''");
                 string safe_cur = currentExe.Replace("'", "''");
@@ -427,6 +485,7 @@ namespace AutoStart
                     + "Start-Process -FilePath '" + safe_cur + "' -ArgumentList '--updated'" + nl
                     + "Remove-Item -Path $MyInvocation.MyCommand.Path -ErrorAction SilentlyContinue" + nl;
                 File.WriteAllText(ps1Path, ps1);
+
                 _running = false;
                 Process.Start(new ProcessStartInfo
                 {
@@ -509,7 +568,6 @@ namespace AutoStart
             {
                 if (required)
                 {
-                    // Tray'de bekle, uygulamayı kapatma
                     ShowBalloon("AutoStart", "No EXE selected. Right-click tray icon > Settings to pick one.", ToolTipIcon.Warning);
                     Log("No EXE selected by user.");
                 }
@@ -537,7 +595,6 @@ namespace AutoStart
 
             while (_running)
             {
-                // EXE seçilmemişse bekle
                 if (string.IsNullOrEmpty(_config.ExePath) || !File.Exists(_config.ExePath))
                 {
                     SetStatus("No EXE selected - open Settings");
@@ -599,7 +656,6 @@ namespace AutoStart
                 {
                     string? fileName = null;
                     try { fileName = p.MainModule?.FileName?.ToLowerInvariant(); } catch { }
-                    // MainModule erişimi başarısız olsa bile process adı eşleşiyorsa say
                     if (fileName == null || fileName == targetLow) count++;
                 }
                 catch { }
@@ -608,6 +664,9 @@ namespace AutoStart
             return count;
         }
 
+        // =====================================================================
+        // MINIMIZE FIX: ProcessWindowStyle.Minimized + agresif WinAPI retry
+        // =====================================================================
         private bool StartExe(string reason)
         {
             Log("START: " + reason);
@@ -617,37 +676,45 @@ namespace AutoStart
                 {
                     FileName = _config.ExePath,
                     WorkingDirectory = Path.GetDirectoryName(_config.ExePath),
-                    UseShellExecute = true
+                    UseShellExecute = true,
+                    // OS seviyesinde minimize baslatma - pencere hic acilmadan minimize gelir
+                    WindowStyle = _config.MinimizeTarget ? ProcessWindowStyle.Minimized : ProcessWindowStyle.Normal
                 };
                 var p = Process.Start(psi);
                 Log("START OK PID=" + p?.Id);
+
                 if (_config.MinimizeTarget && p != null)
                 {
+                    // Bazi uygulamalar WindowStyle'i gormezden gelir, o yuzden WinAPI ile de basiyor
+                    var proc = p;
                     new Thread(() =>
                     {
                         try
                         {
-                            // Pencere handle bulunana kadar bekle (max 5 saniye)
-                            var deadline = DateTime.UtcNow.AddSeconds(5);
-                            while (DateTime.UtcNow < deadline)
+                            // 15 saniye boyunca her 200ms'de bir dene
+                            var deadline = DateTime.UtcNow.AddSeconds(15);
+                            bool minimized = false;
+                            while (DateTime.UtcNow < deadline && !minimized)
                             {
-                                Thread.Sleep(100);
-                                p.Refresh();
-                                IntPtr hwnd = p.MainWindowHandle;
-                                if (hwnd != IntPtr.Zero)
+                                Thread.Sleep(200);
+                                try { proc.Refresh(); } catch { break; }
+
+                                IntPtr hwnd = IntPtr.Zero;
+                                try { hwnd = proc.MainWindowHandle; } catch { break; }
+
+                                if (hwnd != IntPtr.Zero && NativeMethods.IsWindowVisible(hwnd))
                                 {
-                                    // PS1 script ile ayni: once SHOWMINNOACTIVE(7), sonra MINIMIZE(6)
                                     NativeMethods.ShowWindow(hwnd, NativeMethods.SW_SHOWMINNOACTIVE);
-                                    Thread.Sleep(80);
+                                    Thread.Sleep(100);
                                     NativeMethods.ShowWindow(hwnd, NativeMethods.SW_MINIMIZE);
-                                    Thread.Sleep(150);
-                                    // Tekrar dene - bazi uygulamalar restore eder
-                                    NativeMethods.ShowWindow(hwnd, NativeMethods.SW_SHOWMINNOACTIVE);
-                                    break;
+                                    minimized = true;
+                                    Log("Window minimized (hwnd=" + hwnd + ")");
                                 }
                             }
+                            if (!minimized) Log("Minimize: no visible window found in 15s (may be tray-only app)");
                         }
-                        catch { }
+                        catch (Exception ex) { Log("Minimize thread error: " + ex.Message); }
+                        finally { try { proc.Dispose(); } catch { } }
                     }) { IsBackground = true }.Start();
                 }
                 return true;
@@ -713,10 +780,8 @@ namespace AutoStart
             {
                 lock (_logLock)
                 {
-                    // Log boyut limiti: 1MB
                     if (File.Exists(_logPath) && new FileInfo(_logPath).Length > MAX_LOG_BYTES)
                     {
-                        // Son 200 satırı tut
                         var lines = File.ReadAllLines(_logPath);
                         int keep = Math.Min(200, lines.Length);
                         File.WriteAllLines(_logPath, lines[^keep..], System.Text.Encoding.UTF8);
