@@ -30,16 +30,20 @@ jobs:
       - name: Publish
         run: dotnet publish src/AutoStart.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:Version=${{ steps.version.outputs.version }} -p:AssemblyVersion=${{ steps.version.outputs.version }} -p:FileVersion=${{ steps.version.outputs.version }}
 
+      - name: Zip EXE
+        shell: pwsh
+        run: Compress-Archive -Path src/bin/Release/net8.0-windows/win-x64/publish/AutoStart.exe -DestinationPath src/bin/Release/net8.0-windows/win-x64/publish/AutoStart.zip
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: AutoStart
-          path: src/bin/Release/net8.0-windows/win-x64/publish/AutoStart.exe
+          path: src/bin/Release/net8.0-windows/win-x64/publish/AutoStart.zip
 
       - name: Upload to GitHub Release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: src/bin/Release/net8.0-windows/win-x64/publish/AutoStart.exe
+          files: src/bin/Release/net8.0-windows/win-x64/publish/AutoStart.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
