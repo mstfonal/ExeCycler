@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
+using System.IO.Compression;
 using System.Net.Http;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -371,7 +372,7 @@ namespace AutoStart
                     foreach (var asset in assets.EnumerateArray())
                     {
                         string name = asset.GetProperty("name").GetString() ?? "";
-                        if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                        if (name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
                         {
                             dlUrl = asset.GetProperty("browser_download_url").GetString() ?? "";
                             break;
@@ -388,6 +389,7 @@ namespace AutoStart
             string currentExe = Application.ExecutablePath;
             string exeDir = Path.GetDirectoryName(currentExe) ?? AppDomain.CurrentDomain.BaseDirectory;
             string backupPath = Path.Combine(exeDir, "AutoStart_backup.exe");
+            string tempZip = Path.Combine(exeDir, "AutoStart_update.zip");
             string tempPath = Path.Combine(exeDir, "AutoStart_new.exe");
             Log("Applying update: " + info.TagName);
             ShowBalloon("AutoStart", "Downloading update " + info.TagName + "...");
@@ -398,8 +400,19 @@ namespace AutoStart
                 client.DefaultRequestHeaders.Add("User-Agent", "AutoStart/" + CURRENT_VERSION);
                 byte[] bytes = client.GetByteArrayAsync(info.DownloadUrl).GetAwaiter().GetResult();
                 if (bytes.Length < 1024) throw new Exception("Downloaded file too small.");
-                File.WriteAllBytes(tempPath, bytes);
-                Log("Downloaded: " + bytes.Length + " bytes");
+                // ZIP olarak kaydet - SmartScreen MOTW bypass
+                File.WriteAllBytes(tempZip, bytes);
+                Log("Downloaded ZIP: " + bytes.Length + " bytes");
+                // ZIP'ten exe'yi cikart
+                if (File.Exists(tempPath)) File.Delete(tempPath);
+                string tmpDir = Path.Combine(exeDir, "__as_tmp__");
+                if (Directory.Exists(tmpDir)) Directory.Delete(tmpDir, true);
+                System.IO.Compression.ZipFile.ExtractToDirectory(tempZip, tmpDir);
+                string extractedExe = Path.Combine(tmpDir, "AutoStart.exe");
+                File.Move(extractedExe, tempPath);
+                try { Directory.Delete(tmpDir, true); } catch { }
+                try { File.Delete(tempZip); } catch { }
+                Log("Extracted EXE: " + new FileInfo(tempPath).Length + " bytes");
                 if (File.Exists(backupPath)) File.Delete(backupPath);
                 File.Copy(currentExe, backupPath);
                 Log("Backup created: " + backupPath);
@@ -429,6 +442,7 @@ namespace AutoStart
             {
                 Log("UPDATE ERROR: " + ex.Message);
                 try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
+                try { if (File.Exists(tempZip)) File.Delete(tempZip); } catch { }
                 ShowBalloon("AutoStart - Update Failed", ex.Message, ToolTipIcon.Error);
             }
         }
