@@ -483,22 +483,22 @@ namespace AutoStart
                 File.Copy(currentExe, backupPath);
                 Log("Backup created: " + backupPath);
 
-                string nl = "\r\n";
-                string safe_temp = tempPath.Replace("'", "''");
-                string safe_cur = currentExe.Replace("'", "''");
-                string ps1Path = Path.Combine(exeDir, "update_helper.ps1");
-                string ps1 = "Start-Sleep -Seconds 2" + nl
-                    + "Copy-Item -Path '" + safe_temp + "' -Destination '" + safe_cur + "' -Force" + nl
-                    + "Remove-Item -Path '" + safe_temp + "' -ErrorAction SilentlyContinue" + nl
-                    + "Start-Process -FilePath '" + safe_cur + "' -ArgumentList '--updated'" + nl
-                    + "Remove-Item -Path $MyInvocation.MyCommand.Path -ErrorAction SilentlyContinue" + nl;
-                File.WriteAllText(ps1Path, ps1);
+                // cmd.exe ile guncelleme - PS1 ExecutionPolicy sorununu bypass eder
+                string batPath = Path.Combine(exeDir, "update_helper.bat");
+                string bat = "@echo off\r\n"
+                    + "ping 127.0.0.1 -n 4 > nul\r\n"
+                    + "copy /Y \"" + tempPath + "\" \"" + currentExe + "\"\r\n"
+                    + "del \"" + tempPath + "\"\r\n"
+                    + "start \"\" \"" + currentExe + "\" --updated\r\n"
+                    + "del \"%~f0\"\r\n";
+                File.WriteAllText(batPath, bat, System.Text.Encoding.ASCII);
+                Log("Update helper written: " + batPath);
 
                 _running = false;
                 Process.Start(new ProcessStartInfo
                 {
-                    FileName = "powershell.exe",
-                    Arguments = "-NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File \"" + ps1Path + "\"",
+                    FileName = "cmd.exe",
+                    Arguments = "/C \"" + batPath + "\"",
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     WindowStyle = ProcessWindowStyle.Hidden
