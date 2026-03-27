@@ -698,10 +698,10 @@ namespace AutoStart
                     {
                         try
                         {
-                            // Once popup'i kapat (max 10 saniye bekle)
-                            ClosePopupWindow("LP Online Order Services", 10);
+                            // Popup'i minimize et (kapatma - uygulama kapaniyor)
+                            MinimizePopupWindow("LP Online Order Services", 10);
 
-                            // Sonra ana pencereyi minimize et (15 saniye)
+                            // Ana pencereyi minimize et (15 saniye)
                             var deadline = DateTime.UtcNow.AddSeconds(15);
                             bool minimized = false;
                             while (DateTime.UtcNow < deadline && !minimized)
@@ -732,9 +732,8 @@ namespace AutoStart
             catch (Exception ex) { Log("START ERROR: " + ex.Message); return false; }
         }
 
-        // Belirtilen baslikli popup pencereyi guvenli sekilde kapatir
-        // Sadece WM_CLOSE gonderir - process devam eder
-        private void ClosePopupWindow(string windowTitle, int waitSeconds)
+        // Belirtilen baslikli popup pencereyi minimize eder (kapatmaz)
+        private void MinimizePopupWindow(string windowTitle, int waitSeconds)
         {
             var deadline = DateTime.UtcNow.AddSeconds(waitSeconds);
             while (DateTime.UtcNow < deadline)
@@ -743,8 +742,10 @@ namespace AutoStart
                 IntPtr hwnd = NativeMethods.FindWindow(null, windowTitle);
                 if (hwnd != IntPtr.Zero && NativeMethods.IsWindowVisible(hwnd))
                 {
-                    NativeMethods.SendMessage(hwnd, NativeMethods.WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
-                    Log("Popup closed: " + windowTitle);
+                    NativeMethods.ShowWindow(hwnd, NativeMethods.SW_SHOWMINNOACTIVE);
+                    Thread.Sleep(80);
+                    NativeMethods.ShowWindow(hwnd, NativeMethods.SW_MINIMIZE);
+                    Log("Popup minimized: " + windowTitle);
                     return;
                 }
             }
