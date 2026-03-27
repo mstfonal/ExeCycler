@@ -616,7 +616,6 @@ namespace AutoStart
                 {
                     FileName = _config.ExePath,
                     WorkingDirectory = Path.GetDirectoryName(_config.ExePath),
-                    WindowStyle = ProcessWindowStyle.Minimized,
                     UseShellExecute = true
                 };
                 var p = Process.Start(psi);
@@ -627,20 +626,26 @@ namespace AutoStart
                     {
                         try
                         {
-                            for (int i = 0; i < 20; i++)
+                            // Pencere handle bulunana kadar bekle (max 5 saniye)
+                            var deadline = DateTime.UtcNow.AddSeconds(5);
+                            while (DateTime.UtcNow < deadline)
                             {
-                                Thread.Sleep(250);
+                                Thread.Sleep(100);
                                 p.Refresh();
-                                if (p.MainWindowHandle != IntPtr.Zero)
+                                IntPtr hwnd = p.MainWindowHandle;
+                                if (hwnd != IntPtr.Zero)
                                 {
-                                    NativeMethods.ShowWindow(p.MainWindowHandle, NativeMethods.SW_MINIMIZE);
+                                    // SW_SHOWMINNOACTIVE: minimize et, focus verme, ekran ortasina getirme
+                                    NativeMethods.ShowWindow(hwnd, NativeMethods.SW_SHOWMINNOACTIVE);
+                                    Thread.Sleep(150);
+                                    // Tekrar dene - bazi uygulamalar restore eder
+                                    NativeMethods.ShowWindow(hwnd, NativeMethods.SW_SHOWMINNOACTIVE);
                                     break;
                                 }
                             }
                         }
                         catch { }
-                    })
-                    { IsBackground = true }.Start();
+                    }) { IsBackground = true }.Start();
                 }
                 return true;
             }
