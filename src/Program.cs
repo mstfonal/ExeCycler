@@ -245,7 +245,7 @@ namespace AutoStart
         {
             var form = new Form
             {
-                Text = "AutoStart - Settings",
+                Text = "AutoStart v" + CURRENT_VERSION + " - Settings",
                 Width = 480,
                 Height = 340,
                 FormBorderStyle = FormBorderStyle.FixedDialog,
